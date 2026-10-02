@@ -1,0 +1,52 @@
+# LiteLLM gateway + Postgres — both containers, BOTH MANUAL START.
+# restart: "no" everywhere: nothing comes back on reboot or Docker restart.
+#
+#   docker compose start      # start db, then gateway (the manual start)
+#   docker compose stop       # stop both
+#   docker compose ps         # status
+#
+# Host access: http://localhost:4242  (UI at /ui, login: admin + LITELLM_MASTER_KEY)
+# The db is NOT exposed publicly — only to the gateway (and 127.0.0.1 for psql).
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: litellm-db
+    restart: "no"
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: litellm
+    ports:
+      - "127.0.0.1:5432:5432"      # localhost only, for manual psql access
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  gateway:
+    image: ghcr.io/berriai/litellm:main-stable   # rolling stable; re-check after upgrades
+    container_name: litellm-gateway
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "4242:4000"
+    env_file: .env                 # LITELLM_MASTER_KEY, EC_APIKEY
+    environment:
+      # inside the compose network the db is reachable as host "db"
+      DATABASE_URL: postgresql://litellm:${POSTGRES_PASSWORD}@db:5432/litellm
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml
+      - ./elastic_handler.py:/app/elastic_handler.py
+      - ./cc_prompt_inject.py:/app/cc_prompt_inject.py
+    # the image's default CMD has no --config, set it explicitly
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+
+volumes:
+  pgdata:
+    name: litellm_pgdata           # reuses the volume created on first setup

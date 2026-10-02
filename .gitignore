@@ -1,0 +1,4 @@
+.env
+*.log
+.venv-litellm/
+__pycache__/

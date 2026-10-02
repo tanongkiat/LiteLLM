@@ -1,0 +1,78 @@
+# LiteLLM gateway: per-user subscription forwarding for BOTH Claude and ChatGPT,
+# side by side. API-key models can be added to model_list as usual (they simply
+# stay out of the forward list, so client OAuth headers never reach them).
+#
+# Auth model (per request):
+#   x-litellm-api-key : virtual key  -> gateway auth, budgets, tracking
+#   Authorization     : user's own subscription OAuth token -> forwarded upstream
+#
+# Claude:  Claude Code sets ANTHROPIC_BASE_URL to this proxy; the OAuth token
+#          from `claude` login rides in Authorization and is forwarded to
+#          api.anthropic.com.
+# ChatGPT: per-user token from `codex login` (stored in ~/.codex/auth.json) is
+#          forwarded to the ChatGPT Codex backend.
+
+model_list:
+  # ---- Claude subscription (per-user OAuth forwarded to api.anthropic.com) ----
+  # LiteLLM detects sk-ant-oat* tokens and swaps them in as the credential itself.
+  - model_name: claude-sub
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+
+  # ---- Claude subscription, SERVER-SIDE token (for IDEs: ZCode, Cursor, ...) ----
+  # Same seat, but the OAuth token is read from CLAUDE_OAUTH_TOKEN (.env) by the
+  # gateway and the Claude Code system prompt is injected by cc_prompt_inject.py,
+  # so the client only needs base-URL + a virtual key — no custom headers.
+  - model_name: claude-sub-auto
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/CLAUDE_OAUTH_TOKEN
+
+  # ---- Elastic inference endpoint (custom provider, elastic_handler.py) ----
+  # Auth: Authorization: ApiKey <EC_APIKEY>; hits {api_base}/_inference/chat_completion/{id}/_stream
+  - model_name: elastic-chat
+    litellm_params:
+      model: elastic/anthropic-claude-5-opus-chat_completion-c2rkgqoksl9
+      api_base: https://dff19480bef148288cbe5ce0975a8618.ap-southeast-1.aws.found.io:443
+      api_key: os.environ/EC_APIKEY
+
+  # ---- Pooled Anthropic API key (for IDE users / non-Claude-Code clients) ----
+  # Per-token billing, works with every client, real budgets. Uncomment once
+  # you have a key and add ANTHROPIC_API_KEY=sk-ant-api... to .env.
+  # - model_name: claude-api
+  #   litellm_params:
+  #     model: anthropic/claude-sonnet-4-5
+  #     api_key: os.environ/ANTHROPIC_API_KEY
+
+  # NOTE: a plain openai/gpt-* model entry pointed at api_base
+  # https://chatgpt.com/backend-api/codex does NOT work for per-user tokens:
+  # LiteLLM's forwardable-header whitelist (x-*, anthropic-beta) excludes
+  # Authorization, so the backend receives the dummy key. Use the pass-through
+  # endpoint below instead.
+
+litellm_settings:
+  # prepends the Claude Code system prompt on claude-sub-auto requests
+  # (Anthropic's client-shape requirement for subscription tokens)
+  callbacks:
+    - cc_prompt_inject.handler
+  # registers the "elastic/" provider implemented in elastic_handler.py
+  custom_provider_map:
+    - provider: elastic
+      custom_handler: elastic_handler.elastic_llm
+  model_group_settings:
+    # ONLY these model groups get client headers forwarded upstream.
+    forward_client_headers_to_llm_api:
+      - claude-sub
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  # Postgres in docker container `litellm-db` (see db.sh — start it manually).
+  # Enables virtual keys, budgets, teams, spend logs, and the Admin UI (/ui).
+  database_url: os.environ/DATABASE_URL
+  # ---- ChatGPT subscription (per-user OAuth forwarded verbatim) ----
+  # Authorization: Bearer <codex access_token> from `codex login` is passed
+  # through untouched to the ChatGPT Codex backend.
+  pass_through_endpoints:
+    - path: /codex/responses
+      target: https://chatgpt.com/backend-api/codex/responses
+      forward_headers: true
